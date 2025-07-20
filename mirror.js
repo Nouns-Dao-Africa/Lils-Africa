@@ -7,7 +7,7 @@ import Snapshot from '@snapshot-labs/snapshot.js';
 
 // — CONFIGURATION — //
 // Address of the LilNouns Governor contract on Ethereum Mainnet
-const LIL_NOUNS_GOVERNOR = '0x…';
+const LIL_NOUNS_GOVERNOR = '0x5d2C31ce16924C2a71D317e5BbFd5ce387854039';
 // Your Snapshot space ID
 const SNAPSHOT_SPACE     = 'nda-league-of-lils';
 // Chain/network IDs
@@ -75,7 +75,7 @@ async function runMirror() {
           {
             name: 'nft-balance-of',
             params: {
-              address: '0x<NDA_ERC721_Address>',
+              address: '0x614d7503a44e6fd67997f9945bb32d02e8c19431',// NDA NFT CONTRACT 
               symbol: 'NDA',
               decimals: 0,
               chainId: BASE_CHAIN_ID
