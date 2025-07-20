@@ -1,66 +1,93 @@
 // relay.js
+// One-off script to tally closed Snapshot votes and relay them on-chain via Gnosis Safe.
+// Intended to be run on a schedule (e.g. GitHub Actions every minute).
+
 import { request, gql } from 'graphql-request';
-import { ethers } from 'ethers';
-import Safe, { EthersAdapter, SafeFactory } from '@safe-global/protocol-kit';
+import { ethers }      from 'ethers';
+import Safe, { EthersAdapter } from '@safe-global/protocol-kit';
 
 // — CONFIGURATION — //
-const SNAPSHOT_API      = 'https://hub.snapshot.org/graphql';
-const SNAPSHOT_SPACE    = 'nda-league-of-lils';
-const LIL_NOUNS_GOVERNOR = '0x…';       // LilNouns Governor on Mainnet
-const GNOSIS_SAFE_ADDRESS = '0x…';      // Safe holding LilNouns tokens
-const ETH_RPC           = 'https://rpc.ankr.com/eth';
-const SAFE_SERVICE_URL  = 'https://safe-transaction-mainnet.safe.global';
+// Snapshot GraphQL API and space
+const SNAPSHOT_API        = 'https://hub.snapshot.org/graphql';
+const SNAPSHOT_SPACE      = 'nda-league-of-lils';
+// LilNouns Governor contract on Ethereum Mainnet
+const LIL_NOUNS_GOVERNOR  = '0x5d2C31ce16924C2a71D317e5BbFd5ce387854039';
+// Ethereum RPC endpoint
+const ETH_RPC             = 'https://rpc.ankr.com/eth';
+// Gnosis Safe address holding the LilNouns tokens
+const GNOSIS_SAFE_ADDRESS = '0x…';
 
-// Ethers setup
-const provider = new ethers.providers.JsonRpcProvider(ETH_RPC);
-const ethSigner = new ethers.Wallet(process.env.SAFE_OWNER_KEY, provider);
+// Private key for one Safe owner (GitHub secret)
+const SAFE_OWNER_KEY      = process.env.SAFE_OWNER_KEY;
 
-// Safe setup
-const ethAdapter = new EthersAdapter({ ethers, signer: ethSigner });
-const safeSdk = await Safe.create({ ethAdapter, safeAddress: GNOSIS_SAFE_ADDRESS });
+// — SETUP — //
+const provider  = new ethers.providers.JsonRpcProvider(ETH_RPC);
+const signer    = new ethers.Wallet(SAFE_OWNER_KEY, provider);
+const ethAdapter= new EthersAdapter({ ethers, signer });
+const safeSdk   = await Safe.create({ ethAdapter, safeAddress: GNOSIS_SAFE_ADDRESS });
 
-// — HELPERS — //
+// ABI fragments for reading the on-chain deadline and casting votes
+const GOV_ABI = [
+  'function votingEnd(uint256 proposalId) view returns (uint256)',
+  'function castVote(uint256 proposalId,uint8 support)'
+];
+const gov     = new ethers.Contract(LIL_NOUNS_GOVERNOR, GOV_ABI, provider);
+
+// GraphQL query to fetch closed Snapshot proposals
 const FETCH_CLOSED = gql`
   query ($space: String!) {
     proposals(where: { space: $space, state: "closed" }) {
       id
-      choices
       scores
       scores_total
     }
   }
 `;
 
-async function fetchClosedProposals() {
-  const res = await request(SNAPSHOT_API, FETCH_CLOSED, { space: SNAPSHOT_SPACE });
-  return res.proposals;
-}
+async function runRelay() {
+  console.log('🔍 Fetching closed Snapshot proposals…');
+  const { proposals } = await request(SNAPSHOT_API, FETCH_CLOSED, { space: SNAPSHOT_SPACE });
+  if (!proposals.length) {
+    console.log('– No closed proposals to process.');
+    return;
+  }
 
-async function relayVotes() {
-  const proposals = await fetchClosedProposals();
+  // Get current on-chain timestamp
+  const nowTs = (await provider.getBlock('latest')).timestamp;
+
   for (const p of proposals) {
-    // Skip if already relayed (you’ll want a local DB or tag on Snapshot to track)
-    if (p.scores_total === 0) continue;
+    if (p.scores_total === 0) {
+      console.log(`#${p.id} has no votes—skipping.`);
+      continue;
+    }
+    // Read on-chain vote end timestamp
+    const endTs = (await gov.votingEnd(p.id)).toNumber();
+    if (nowTs >= endTs) {
+      console.log(`#${p.id} ended on-chain at ${endTs} (now=${nowTs})—too late.`);
+      continue;
+    }
 
-    // Find winning index
-    const max = Math.max(...p.scores);
-    const choiceIndex = p.scores.findIndex(s => s === max);
-    const support = choiceIndex; // 0=For,1=Against,2=Abstain
+    // Determine the winning choice
+    const maxScore     = Math.max(...p.scores);
+    const choiceIndex  = p.scores.findIndex(s => s === maxScore);
+    const support      = choiceIndex;  // 0 = For, 1 = Against, 2 = Abstain
 
-    // Encode castVote(uint256 proposalId, uint8 support)
-    const govAbi = ['function castVote(uint256 proposalId, uint8 support)'];
-    const iface = new ethers.utils.Interface(govAbi);
-    const data = iface.encodeFunctionData('castVote', [p.id, support]);
+    console.log(`↪️  Relaying vote for proposal #${p.id}: support=${support}`);
 
-    // Build Safe transaction
-    const safeTransaction = await safeSdk.createTransaction({
-      to: LIL_NOUNS_GOVERNOR,
+    // Encode and dispatch Safe transaction
+    const iface   = new ethers.utils.Interface([GOV_ABI[1]]);
+    const data    = iface.encodeFunctionData('castVote', [p.id, support]);
+    const safeTx  = await safeSdk.createTransaction({
+      to:    LIL_NOUNS_GOVERNOR,
       data,
       value: '0'
     });
-    const txResponse = await safeSdk.executeTransaction(safeTransaction);
-    console.log(`🔗 Relayed vote for proposal ${p.id}: txn ${txResponse.hash}`);
+    const txRes   = await safeSdk.executeTransaction(safeTx);
+    console.log(`✅ Vote cast for proposal #${p.id} — tx ${txRes.hash}`);
   }
 }
 
-relayVotes().catch(console.error);
+runRelay().catch(err => {
+  console.error('❌ relay.js fatal error:', err);
+  process.exit(1);
+});
