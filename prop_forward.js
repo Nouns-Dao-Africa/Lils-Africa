@@ -7,6 +7,12 @@ import { request, gql } from 'graphql-request';
 import { ethers } from 'ethers';
 import Snapshot from '@snapshot-labs/snapshot.js';
 
+if (!process.env.RELAY_KEY) {
+  console.error('Error: RELAY_KEY is not set.');
+  process.exit(1);
+}
+console.log('Starting prop_forward.js...');
+
 // — CONFIGURATION —
 const SOURCE_SPACE  = 'lils-africa-props';
 const TARGET_SPACE  = 'lils-africa';
@@ -36,29 +42,33 @@ const FETCH_PENDING = gql`
   const { proposals } = await request(SNAPSHOT_API, FETCH_PENDING, { space: SOURCE_SPACE });
   for (const p of proposals) {
     if (seen.includes(p.id)) continue;
-    console.log(`Forwarding #${p.id}`);
+    try {
+      console.log(`Forwarding prop #${p.id}`);
 
-    await snapshotClient.proposal(signer, {
-      space:    TARGET_SPACE,
-      type:     'single-choice',
-      title:    p.title,
-      body:     p.body,
-      choices:  ['Approve','Reject'],
-      start:    p.start,
-      end:      p.end,
-      snapshot: p.snapshot,
-      network:  '1',
-      strategies: [{
-        name: 'nft-balance-of',
-        params: {
-          address: '0x614d7503a44e6fd67997f9945bb32d02e8c19431',
-          symbol:  'NDA', decimals: 0, chainId: BASE_CHAIN_ID
-        }
-      }],
-      plugins: {},
-      app: 'prop-forward'
-    });
-    seen.push(p.id);
+      await snapshotClient.proposal(signer, {
+        space:    TARGET_SPACE,
+        type:     'single-choice',
+        title:    p.title,
+        body:     p.body,
+        choices:  ['Approve','Reject'],
+        start:    p.start,
+        end:      p.end,
+        snapshot: p.snapshot,
+        network:  '1',
+        strategies: [{
+          name: 'nft-balance-of',
+          params: {
+            address: '0x614d7503a44e6fd67997f9945bb32d02e8c19431',
+            symbol:  'NDA', decimals: 0, chainId: BASE_CHAIN_ID
+          }
+        }],
+        plugins: {},
+        app: 'prop-forward'
+      });
+      seen.push(p.id);
+    } catch (err) {
+      console.error(`Error forwarding prop #${p.id}:`, err);
+    }
   }
   fs.writeFileSync(STATE_FILE, JSON.stringify(seen));
 })().catch(e => { console.error(e); process.exit(1); });

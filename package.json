@@ -1,16 +1,43 @@
-{
-  "name": "nda-lilnouns-relay",
-  "version": "1.0.0",
-  "scripts": {
-    "mirror":       "node mirror.js",
-    "relay":        "node relay.js",
-    "prop-forward": "node prop_forward.js",
-    "prop-submit":  "node prop_submit.js"
-  },
-  "dependencies": {
-    "@snapshot-labs/snapshot.js": "^0.1.0",
-    "ethers":                     "^6.0.0",
-    "graphql-request":            "^5.0.0",
-    "@safe-global/protocol-kit":  "^1.3.0"
-  }
+"use strict";
+
+const { ethers } = require("ethers");
+const { SnapshotClient } = require("@snapshot-labs/snapshot.js");
+const fs = require("fs");
+const path = require("path");
+
+if (!process.env.RELAY_KEY) {
+  console.error('Error: RELAY_KEY is not set.');
+  process.exit(1);
 }
+console.log('Starting prop_forward.js...');
+
+const RELAY_KEY = process.env.RELAY_KEY;
+const snapshotClient = new SnapshotClient();
+
+async function main() {
+  const seenFile = path.join(__dirname, "seen.json");
+  let seen = [];
+  if (fs.existsSync(seenFile)) {
+    seen = JSON.parse(fs.readFileSync(seenFile));
+  }
+
+  const proposals = await snapshotClient.proposals("lilsnouns.eth");
+
+  for (const p of proposals) {
+    if (seen.includes(p.id)) continue;
+    try {
+      console.log(`Forwarding prop #${p.id}`);
+      await snapshotClient.proposal(RELAY_KEY, "lilsnouns.eth", p.id);
+      seen.push(p.id);
+    } catch (err) {
+      console.error(`Error forwarding prop #${p.id}:`, err);
+    }
+  }
+
+  fs.writeFileSync(seenFile, JSON.stringify(seen, null, 2));
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

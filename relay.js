@@ -6,6 +6,12 @@ import { request, gql } from 'graphql-request';
 import { ethers }      from 'ethers';
 import Safe, { EthersAdapter } from '@safe-global/protocol-kit';
 
+if (!process.env.SAFE_OWNER_KEY) {
+  console.error('Error: SAFE_OWNER_KEY is not set.');
+  process.exit(1);
+}
+console.log('Starting relay.js...');
+
 // — CONFIGURATION —
 const SNAPSHOT_API        = 'https://hub.snapshot.org/graphql';
 const SNAPSHOT_SPACE      = 'nda-league-of-lils';
@@ -35,21 +41,25 @@ async function runRelay() {
   const now = (await provider.getBlock('latest')).timestamp;
 
   for (const p of proposals) {
-    if (p.scores_total === 0) continue;
-    const endTs = (await new ethers.Contract(
-      LIL_NOUNS_GOVERNOR,
-      ['function votingEnd(uint256) view returns (uint256)'],
-      provider
-    ).votingEnd(p.id)).toNumber();
-    if (now >= endTs) continue;
+    try {
+      if (p.scores_total === 0) continue;
+      const endTs = (await new ethers.Contract(
+        LIL_NOUNS_GOVERNOR,
+        ['function votingEnd(uint256) view returns (uint256)'],
+        provider
+      ).votingEnd(p.id)).toNumber();
+      if (now >= endTs) continue;
 
-    const choiceIndex = p.scores.findIndex(s => s === Math.max(...p.scores));
-    const iface = new ethers.utils.Interface(['function castVote(uint256,uint8)']);
-    const data  = iface.encodeFunctionData('castVote', [p.id, choiceIndex]);
+      const choiceIndex = p.scores.findIndex(s => s === Math.max(...p.scores));
+      const iface = new ethers.utils.Interface(['function castVote(uint256,uint8)']);
+      const data  = iface.encodeFunctionData('castVote', [p.id, choiceIndex]);
 
-    const tx = await safeSdk.createTransaction({ to: LIL_NOUNS_GOVERNOR, data, value: '0' });
-    await safeSdk.executeTransaction(tx);
-    console.log(`🔗 Voted on #${p.id}`);
+      const tx = await safeSdk.createTransaction({ to: LIL_NOUNS_GOVERNOR, data, value: '0' });
+      await safeSdk.executeTransaction(tx);
+      console.log(`🔗 Voted on #${p.id}`);
+    } catch (err) {
+      console.error(`Error processing proposal #${p.id}:`, err);
+    }
   }
 }
 
