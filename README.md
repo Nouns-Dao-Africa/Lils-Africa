@@ -108,9 +108,6 @@ nda-lilnouns-relay/
 
    * Create a dummy LilProp, vote in `lils-africa`, and verify on‑chain proposal creation.
 
----
-
-  ```
 
 ---
 
