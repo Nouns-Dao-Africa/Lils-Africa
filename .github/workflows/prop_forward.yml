@@ -1,9 +1,9 @@
-name: Relay Votes
+name: Forward LilProps
 on:
   schedule:
     - cron: '*/1 * * * *'
 jobs:
-  relay:
+  forward:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -11,6 +11,6 @@ jobs:
         with:
           node-version: '18'
       - run: npm ci
-      - run: npm run relay
+      - run: npm run prop-forward
         env:
-          SAFE_OWNER_KEY: ${{ secrets.SAFE_OWNER_KEY }}
+          RELAY_KEY: ${{ secrets.RELAY_KEY }}

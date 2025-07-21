@@ -1,9 +1,11 @@
-# Lils-Africa
-Proposal Mirror and Vote Relay bridging Nouns Dao Africa &amp; LIl Nouns
-
 # NDA ↔ LilNouns Governance Bridge
 
-This repository implements a scheduled, one-off integration between **NounsDaoAfrica (NDA)** on Base (chainId 8453) and **LilNouns DAO** on Ethereum Mainnet. It enables off-chain voting via Snapshot for NDA ERC-721 token holders and on-chain vote execution through a Gnosis Safe.
+> A GitHub-Actions-driven pipeline enabling **NounsDaoAfrica** (NDA) ERC‑721 holders to:
+>
+> 1. **Mirror** on-chain LilNouns DAO proposals into Snapshot
+> 2. **Relay** community votes back on‑chain via Gnosis Safe
+> 3. **Forward** community‑created “LilProps” for off‑chain Approve/Reject voting
+> 4. **Submit** approved LilProps on‑chain to the LilNouns Governor
 
 ---
 
@@ -11,97 +13,103 @@ This repository implements a scheduled, one-off integration between **NounsDaoAf
 
 ```
 nda-lilnouns-relay/
-├── mirror.js                # Script to mirror on-chain proposals into Snapshot
-├── relay.js                 # Script to tally Snapshot votes and relay on-chain
-├── package.json             # Dependencies & npm scripts
-├── .env.example             # Example environment variables
-└── .github/
-    └── workflows/
-        ├── mirror.yml       # GitHub Action to run mirror.js on schedule
-        └── relay.yml        # GitHub Action to run relay.js on schedule
+├── mirror.js                  # Detect & mirror on-chain proposals → Snapshot
+├── relay.js                   # Tally Snapshot votes → castVote on-chain
+├── prop_forward.js            # Forward community LilProps → main vote space
+├── prop_submit.js             # Submit approved LilProps on-chain
+├── prop_forward_state.json    # Tracks forwarded prop IDs (auto-generated)
+├── prop_submit_state.json     # Tracks submitted prop IDs  (auto-generated)
+├── package.json               # npm scripts & dependencies
+├── .env.example               # Sample environment variables
+└── .github/workflows/
+    ├── mirror.yml             # Schedule for mirror.js
+    ├── relay.yml              # Schedule for relay.js
+    ├── prop_forward.yml       # Schedule for prop_forward.js
+    └── prop_submit.yml        # Schedule for prop_submit.js
 ```
 
 ---
 
-## Prerequisites
+## How It Works
 
-* Node.js v18 or later
-* GitHub repository with Actions enabled
-* Gnosis Safe multisig on Ethereum Mainnet holding LilNouns tokens
-* Snapshot space configured (e.g. `nda-league-of-lils`)
-* NDA ERC-721 contract deployed on Base
+### mirror.js
 
----
+* Listens for `ProposalCreated` events on the LilNouns Governor contract.
+* Creates matching off‑chain proposals in Snapshot (`nda-league-of-lils`).
+* Ensures the community sees every new on‑chain proposal instantly.
 
-## Installation
+### relay.js
 
-1. **Clone the repository**
+* Queries Snapshot for proposals closed in `nda-league-of-lils`.
+* Verifies on‑chain `votingEnd` timestamp.
+* Submits the Gnosis Safe’s vote via the `castVote` function on‑chain.
 
-   ```bash
-   git clone git@github.com:YOUR_ORG/nda-lilnouns-relay.git
-   cd nda-lilnouns-relay
-   ```
+### prop\_forward.js
 
-2. **Install dependencies**
+* Polls the community Snapshot space `lils-africa-props` for new proposals.
+* Forwards each as a **single-choice** off‑chain vote (`Approve`/`Reject`) into `lils-africa`.
 
-   ```bash
-   npm install
-   ```
+### prop\_submit.js
 
-3. **Configure environment**
-   Copy `.env.example` to `.env`, or set GitHub Secrets:
+* Tallies closed votes in `lils-africa`.
+* If “Approve” ≥ configured threshold (default 50%), parses the JSON‑encoded body for on‑chain parameters.
+* Calls `Governor.propose(...)` on LilNouns Governor to create the on‑chain proposal.
 
-   ```env
-   RELAY_KEY=           # ETH key for mirror.js (must hold some ETH)
-   SAFE_OWNER_KEY=      # Private key for one Gnosis Safe owner
-   ```
+*All scripts run every minute via GitHub Actions, using encrypted secrets for keys.*
 
 ---
 
-## Configuration
+## Configuration Variables & Addresses
 
-Edit the following constants in the scripts before running:
+| File                 | Variable / Placeholder   | Description                                    |
+| -------------------- | ------------------------ | ---------------------------------------------- |
+| **mirror.js**        | `LIL_NOUNS_GOVERNOR`     | Governor contract address (Ethereum Mainnet)   |
+|                      | `SNAPSHOT_SPACE`         | Snapshot space ID (`nda-league-of-lils`)       |
+|                      | `0x<NDA_ERC721_Address>` | NDA ERC‑721 contract address (Base)            |
+|                      | `BLOCK_RANGE`            | Blocks back to scan for new on‑chain proposals |
+|                      | `RELAY_KEY` (env)        | Private key for mirror.js (must hold ETH)      |
+| **relay.js**         | `LIL_NOUNS_GOVERNOR`     | Same as above                                  |
+|                      | `GNOSIS_SAFE_ADDRESS`    | Gnosis Safe address holding LilNouns tokens    |
+|                      | `ETH_RPC`                | Ethereum RPC endpoint URL                      |
+|                      | `SAFE_OWNER_KEY` (env)   | Private key for relay.js                       |
+| **prop\_forward.js** | `SOURCE_SPACE`           | Community space ID (`lils-africa-props`)       |
+|                      | `TARGET_SPACE`           | Main vote space ID (`lils-africa`)             |
+|                      | `0x<NDA_ERC721_Address>` | NDA ERC‑721 contract address (Base)            |
+|                      | `RELAY_KEY` (env)        | Private key for prop\_forward.js               |
+| **prop\_submit.js**  | `GOVERNOR_ADDRESS`       | Governor contract address                      |
+|                      | `TARGET_SPACE`           | Main vote space ID (`lils-africa`)             |
+|                      | `PASS_THRESHOLD`         | Approval ratio threshold (e.g. `0.5` = 50%)    |
+|                      | `SAFE_OWNER_KEY` (env)   | Private key for prop\_submit.js                |
 
-* **mirror.js**
-
-  * `LIL_NOUNS_GOVERNOR` — LilNouns governor contract address
-  * `SNAPSHOT_SPACE` — Snapshot space ID
-  * `0x<NDA_ERC721_Address>` — NDA ERC-721 contract on Base
-  * `BLOCK_RANGE` — how many blocks back to scan for new events
-
-* **relay.js**
-
-  * `SNAPSHOT_SPACE` — Snapshot space ID
-  * `LIL_NOUNS_GOVERNOR` — LilNouns governor address
-  * `GNOSIS_SAFE_ADDRESS` — Gnosis Safe address
+> **Tip:** Add both state JSON files to `.gitignore` so they don’t get committed.
 
 ---
 
-## Usage
+## Next Steps
 
-### Local
+1. **Create Snapshot Spaces**
 
-* Mirror on-chain proposals:
+   * **Community**: `lils-africa-props` (allow NDA NFT holders to propose)
+   * **Main**:      `lils-africa` (locked to bot-driven forwarding)
+   * **Mirror**:    `nda-league-of-lils` (mirror of official proposals)
+2. **Configure Strategies**
 
-  ```bash
-  node mirror.js
-  ```
+   * Use `nft-balance-of` with your NDA ERC‑721 contract on Base (chainId 8453).
+3. **Add Secrets**
 
-* Relay Snapshot votes:
+   * In GitHub Settings → Secrets: `RELAY_KEY`, `SAFE_OWNER_KEY`.
+4. **Commit & Push**
 
-  ```bash
-  node relay.js
-  ```
+   * Ensure all scripts and workflows are in `main` branch.
+5. **Verify Workflows**
 
-### GitHub Actions
+   * Check GitHub Actions tab to confirm each workflow runs without errors.
+6. **Test End‑to‑End**
 
-* Workflows in `.github/workflows/mirror.yml` and `.github/workflows/relay.yml` run each script every minute.
-* Ensure both workflows reference the correct secrets:
+   * Create a dummy LilProp, vote in `lils-africa`, and verify on‑chain proposal creation.
 
-  ```yaml
-  env:
-    RELAY_KEY:      ${{ secrets.RELAY_KEY }}
-    SAFE_OWNER_KEY: ${{ secrets.SAFE_OWNER_KEY }}
+---
+
   ```
 
 ---
@@ -182,3 +190,5 @@ This key is one of the owners of the Gnosis Safe that actually holds and control
 	•	Monitor Safe transactions via the Safe Transaction Service’s webhooks or dashboard to ensure no unexpected votes happen.
 
 Once you’ve generated those two keys and injected them into your GitHub Secrets (or other vault), your mirror.js and relay.js scripts will be able to authenticate and sign exactly as intended.
+
+

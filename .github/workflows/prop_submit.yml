@@ -1,9 +1,9 @@
-name: Relay Votes
+name: Submit LilProps on-chain
 on:
   schedule:
     - cron: '*/1 * * * *'
 jobs:
-  relay:
+  submit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -11,6 +11,6 @@ jobs:
         with:
           node-version: '18'
       - run: npm ci
-      - run: npm run relay
+      - run: npm run prop-submit
         env:
           SAFE_OWNER_KEY: ${{ secrets.SAFE_OWNER_KEY }}

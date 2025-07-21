@@ -2,13 +2,15 @@
   "name": "nda-lilnouns-relay",
   "version": "1.0.0",
   "scripts": {
-    "mirror": "node mirror.js",
-    "relay":  "node relay.js"
+    "mirror":       "node mirror.js",
+    "relay":        "node relay.js",
+    "prop-forward": "node prop_forward.js",
+    "prop-submit":  "node prop_submit.js"
   },
   "dependencies": {
     "@snapshot-labs/snapshot.js": "^0.1.0",
-    "ethers": "^6.0.0",
-    "graphql-request": "^5.0.0",
-    "@safe-global/protocol-kit": "^1.3.0"
+    "ethers":                     "^6.0.0",
+    "graphql-request":            "^5.0.0",
+    "@safe-global/protocol-kit":  "^1.3.0"
   }
 }
