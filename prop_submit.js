@@ -43,62 +43,57 @@ const FETCH_CLOSED = gql`
 
   const { proposals } = await request(SNAPSHOT_API, FETCH_CLOSED, { space: TARGET_SPACE });
   for (const p of proposals) {
-    try {
-      if (seen.includes(p.id)) continue;
-      if (p.scores_total === 0) { seen.push(p.id); continue; }
+    if (seen.includes(p.id)) continue;
+    if (p.scores_total === 0) { seen.push(p.id); continue; }
 
-      const approved = p.scores[0];
-      const ratio    = approved / p.scores_total;
-      if (ratio < PASS_THRESHOLD) {
-        seen.push(p.id); continue;
-      }
-      let params;
-      try { params = JSON.parse(p.body); } catch { seen.push(p.id); continue; }
-
-      if (!Array.isArray(params.targets) || !params.targets.every(addr => ethers.utils.isAddress(addr))) {
-        console.error(`Invalid targets in prop #${p.id}`);
-        seen.push(p.id);
-        continue;
-      }
-      if (!Array.isArray(params.values) || params.values.some(v => isNaN(Number(v)))) {
-        console.error(`Invalid values in prop #${p.id}`);
-        seen.push(p.id);
-        continue;
-      }
-      if (!Array.isArray(params.signatures) || !params.signatures.every(sig => typeof sig === 'string')) {
-        console.error(`Invalid signatures in prop #${p.id}`);
-        seen.push(p.id);
-        continue;
-      }
-      if (!Array.isArray(params.calldatas) || !params.calldatas.every(cd => /^0x[0-9a-fA-F]*$/.test(cd))) {
-        console.error(`Invalid calldatas in prop #${p.id}`);
-        seen.push(p.id);
-        continue;
-      }
-      if (typeof params.description !== 'string') {
-        console.error(`Invalid description in prop #${p.id}`);
-        seen.push(p.id);
-        continue;
-      }
-      const { targets, values, signatures, calldatas, description } = params;
-
-      const gasEstimate = await governor.estimateGas.propose(targets, values, signatures, calldatas, description);
-      if (gasEstimate.gt(ethers.BigNumber.from('10000000'))) {
-        console.error(`Gas estimate too high (${gasEstimate.toString()}) for prop #${p.id}`);
-        seen.push(p.id);
-        continue;
-      }
-
-      try {
-        const tx = await governor.propose(targets, values, signatures, calldatas, description);
-        console.log(`On-chain tx: ${tx.hash}`);
-      } catch (e) {
-        console.error(`Submission failed for prop #${p.id}:`, e);
-      }
+    const approved = p.scores[0];
+    const ratio    = approved / p.scores_total;
+    if (ratio < PASS_THRESHOLD) {
       seen.push(p.id);
-    } catch (err) {
-      console.error(`Error processing proposal #${p.id}:`, err);
+      continue;
     }
+
+    let params;
+    try { params = JSON.parse(p.body); } catch {
+      seen.push(p.id);
+      continue;
+    }
+
+    const { targets, values, signatures, calldatas, description } = params;
+
+    // Basic validation
+    if (
+      !Array.isArray(targets) || !targets.every(a => ethers.utils.isAddress(a)) ||
+      !Array.isArray(values)  || values.some(v => isNaN(Number(v))) ||
+      !Array.isArray(signatures) || !signatures.every(s => typeof s === 'string') ||
+      !Array.isArray(calldatas)   || !calldatas.every(c => /^0x[0-9a-fA-F]*$/.test(c)) ||
+      typeof description !== 'string'
+    ) {
+      console.error(`Invalid parameters for prop #${p.id}`);
+      seen.push(p.id);
+      continue;
+    }
+
+    // Gas check
+    const gasEstimate = await governor.estimateGas.propose(targets, values, signatures, calldatas, description);
+    if (gasEstimate.gt(ethers.BigNumber.from('10000000'))) {
+      console.error(`Gas estimate too high (${gasEstimate.toString()}) for prop #${p.id}`);
+      seen.push(p.id);
+      continue;
+    }
+
+    // Submit on‐chain
+    try {
+      const tx = await governor.propose(targets, values, signatures, calldatas, description);
+      console.log(`On-chain tx sent: ${tx.hash}`);
+    } catch (e) {
+      console.error(`Submission failed for prop #${p.id}:`, e);
+    }
+
+    seen.push(p.id);
   }
-  fs.writeFileSync(STATE_FILE, JSON.stringify(seen));
-})().catch(e => { console.error(e); process.exit(1); });
+  fs.writeFileSync(STATE_FILE, JSON.stringify(seen, null, 2));
+})().catch(e => {
+  console.error('prop_submit.js fatal error:', e);
+  process.exit(1);
+});

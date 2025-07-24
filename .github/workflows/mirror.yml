@@ -1,16 +1,21 @@
-name: Mirror Proposals
+name: Mirror on-chain proposals
+
 on:
-  schedule:
-    - cron: '*/1 * * * *'
+  repository_dispatch:
+    types: [proposalCreated]
+
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   mirror:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-      - run: npm ci
-      - run: npm run mirror
+      - name: Install dependencies
+        run: npm ci
+      - name: Run mirror
+        run: node mirror.js
         env:
           RELAY_KEY: ${{ secrets.RELAY_KEY }}

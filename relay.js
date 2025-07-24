@@ -1,5 +1,5 @@
 // relay.js
-// One-off script to castSnapshot votes on-chain via Gnosis Safe.
+// One-off script to cast Snapshot votes on-chain via Gnosis Safe.
 // Scheduled every minute via GitHub Actions.
 
 import { request, gql } from 'graphql-request';
@@ -21,10 +21,10 @@ const ETH_RPC             = 'https://rpc.ankr.com/eth';
 const SAFE_OWNER_KEY      = process.env.SAFE_OWNER_KEY;
 
 // — SETUP —
-const provider  = new ethers.providers.JsonRpcProvider(ETH_RPC);
-const signer    = new ethers.Wallet(SAFE_OWNER_KEY, provider);
-const ethAdapter= new EthersAdapter({ ethers, signer });
-const safeSdk   = await Safe.create({ ethAdapter, safeAddress: GNOSIS_SAFE_ADDRESS });
+const provider   = new ethers.providers.JsonRpcProvider(ETH_RPC);
+const signer     = new ethers.Wallet(SAFE_OWNER_KEY, provider);
+const ethAdapter = new EthersAdapter({ ethers, signer });
+const safeSdk    = await Safe.create({ ethAdapter, safeAddress: GNOSIS_SAFE_ADDRESS });
 
 const FETCH_CLOSED = gql`
   query($space: String!) {
@@ -50,10 +50,12 @@ async function runRelay() {
       ).votingEnd(p.id)).toNumber();
       if (now >= endTs) continue;
 
+      // pick winning choice
       const choiceIndex = p.scores.findIndex(s => s === Math.max(...p.scores));
-      const iface = new ethers.utils.Interface(['function castVote(uint256,uint8)']);
-      const data  = iface.encodeFunctionData('castVote', [p.id, choiceIndex]);
+      const iface       = new ethers.utils.Interface(['function castVote(uint256,uint8)']);
+      const data        = iface.encodeFunctionData('castVote', [p.id, choiceIndex]);
 
+      // safe tx
       const tx = await safeSdk.createTransaction({ to: LIL_NOUNS_GOVERNOR, data, value: '0' });
       await safeSdk.executeTransaction(tx);
       console.log(`🔗 Voted on #${p.id}`);
@@ -63,4 +65,7 @@ async function runRelay() {
   }
 }
 
-runRelay().catch(e => { console.error(e); process.exit(1); });
+runRelay().catch(e => {
+  console.error('relay.js fatal error:', e);
+  process.exit(1);
+});

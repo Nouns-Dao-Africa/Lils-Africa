@@ -44,7 +44,6 @@ const FETCH_PENDING = gql`
     if (seen.includes(p.id)) continue;
     try {
       console.log(`Forwarding prop #${p.id}`);
-
       await snapshotClient.proposal(signer, {
         space:    TARGET_SPACE,
         type:     'single-choice',
@@ -70,5 +69,8 @@ const FETCH_PENDING = gql`
       console.error(`Error forwarding prop #${p.id}:`, err);
     }
   }
-  fs.writeFileSync(STATE_FILE, JSON.stringify(seen));
-})().catch(e => { console.error(e); process.exit(1); });
+  fs.writeFileSync(STATE_FILE, JSON.stringify(seen, null, 2));
+})().catch(e => {
+  console.error('prop_forward.js fatal error:', e);
+  process.exit(1);
+});
