@@ -19,7 +19,7 @@
 ## 🏗️ High-Level Architecture
 ### Chains & Roles
 - **Ethereum Mainnet**
-  - **Lil Nouns Governor** (existing, read-only).
+  - **Lil Nouns Governor (Compound Bravo fork)** — existing, read-only.
   - **NDA Mainnet Executor (Agent)** — holds delegated Lil Nouns voting power; **casts `castVote`/`castVoteWithReason`** after Base finalization.
   - **Layer-0 Endpoint** — receives verified messages from Base.
 
@@ -29,94 +29,109 @@
 
 ### Message Flow
 1. **Mirror:** When `ProposalCreated` fires on Lil Nouns Governor, **MirrorFeed** (lightweight on-chain or minimal off-chain pusher operated by us) **emits** a Layer-0 message OR a simple “proposal registration” tx to **NDA MirrorGovernor** with:
-   - `proposalId`, `targets`, `values`, `signatures/calldatas` (if exposed), `startBlock`, `endBlock`, `description`, and **snapshotBlock**.
+   - `proposalId`, `targets`, `values`, `signatures/calldatas` (from `getActions`), `startBlock`, `endBlock`, `description`, and **snapshotBlock**.
 2. **Vote on Base:** NDA holders vote during the **same window** (`start/end`) or a **mapped time window** (block-time alignment handled in config).
 3. **Finalize on Base:** MirrorGovernor checks quorum/thresholds, locks the result.
-4. **Send Result to Mainnet:** MirrorGovernor sends a **Layer-0 message** with `{proposalId, choice, reason, proofHash}`.
+4. **Send Result to Mainnet:** MirrorGovernor sends a **Layer-0 message** with `{proposalId, support (0/1/2), reason, proofHash}`.
 5. **Execute on Mainnet:** NDA Mainnet Executor verifies the message and calls **Lil Nouns Governor `castVote[_WithReason]`** from its **pre-delegated address**.
 
-> **Critical requirement:** The **Mainnet Executor address must have Lil Nouns voting power delegated _before the proposal’s snapshot block_** or it won’t count. We’ll put a standing ops runbook to maintain delegation.
+> **Critical requirement:** The **Mainnet Executor address must have Lil Nouns voting power delegated _before the proposal’s snapshot block_** or it won’t count.
 
 ---
 
 ## 📦 Contracts (deliverables)
 ### 1) NDA MirrorGovernor (Base)
-- **Standards:** OpenZeppelin `Governor`, `GovernorCountingSimple`, `GovernorVotes` (works with ERC-20Votes or ERC-721Votes; we’ll add an **ERC-721 voting adapter** if NDA is ERC-721 without `getVotes`).
+- **Standards:** Custom voting contract (can leverage OZ modules internally) but must **mirror Compound Bravo semantics**.
 - **Responsibilities:**
   - Maintain a **registry of mirrored proposals** keyed by Lil Nouns `proposalId`.
-  - Enforce **voting window** synced/mapped to mainnet.
-  - Configurable **quorum** and **vote success rule** (e.g., For > Against; optional `abstain`).
-  - **Finalize** result → **emit** `Finalized(proposalId, choice, tally)`.
+  - Enforce **voting window** congruent with Compound (`startBlock` → `endBlock`).
+  - Configurable **quorum** and **vote success rule**.
+  - Support mapping of votes into Compound support codes (0 = Against, 1 = For, 2 = Abstain).
+  - **Finalize** result → **emit** `Finalized(proposalId, support, tally)`.
   - **Layer-0 OApp sender**: packs result → sends to Mainnet Executor.
 - **Safety:**
   - **Pausable** mirroring/voting; **upgradeable** via UUPS/Transparent Proxy (optional).
   - **Replay protection** and **proposalId binding**.
-  - **Timelock** (optional) for governance parameter changes.
 
 ### 2) NDA Mainnet Executor (Ethereum)
+- **Interface:**
+  ```solidity
+  interface ICompoundBravoLike {
+      function castVote(uint256 proposalId, uint8 support) external;
+      function castVoteWithReason(uint256 proposalId, uint8 support, string calldata reason) external;
+      function proposals(uint256 proposalId)
+        external
+        view
+        returns (
+            uint256 id,
+            address proposer,
+            uint256 eta,
+            uint256 startBlock,
+            uint256 endBlock,
+            uint256 forVotes,
+            uint256 againstVotes,
+            uint256 abstainVotes,
+            bool canceled,
+            bool executed
+        );
+      function getActions(uint256 proposalId)
+        external
+        view
+        returns (address[] memory targets, uint256[] memory values, string[] memory signatures, bytes[] memory calldatas);
+      function getReceipt(uint256 proposalId, address voter) external view returns (bool hasVoted, uint8 support, uint96 votes);
+  }
+  ```
 - **Responsibilities:**
   - **Layer-0 OApp receiver**: validates message origin (Base MirrorGovernor + endpoint/DVN/ISM).
-  - After acceptance → call **`castVote` or `castVoteWithReason`** on Lil Nouns Governor for `proposalId`.
-  - **Single-vote policy** with idempotency (no double cast).
+  - After acceptance → call `castVoteWithReason(proposalId, support, reason)`.
+  - **Check idempotency** using `getReceipt` to prevent double-votes.
 - **Voting Power:**
-  - Holds or is **delegatee of Lil Nouns voting tokens** (ensure **delegation is set _prior to proposal snapshot_**).
+  - Must be **delegatee** of Lil Nouns voting tokens **before `startBlock`**.
 - **Safety:**
   - **Only accept messages** from our Base app/endpoint.
-  - **Pausable**; **emergency withdraw** of delegation (ops runbook).
-  - **No custody** of ETH/tokens beyond gas; minimal surface.
+  - **Pausable**; **emergency delegation controls**.
 
 ### 3) (Optional) MirrorFeed
-- **Tiny helper**: listens to `ProposalCreated` and **pushes** a registration tx to Base MirrorGovernor (or sends a cross-chain msg if you prefer **pure on-chain emit** on Ethereum via a small **Mainnet MirrorEmitter** contract + Layer-0).  
-- We’ll choose **pure on-chain → Layer-0** if we want *zero off-chain steps*; otherwise a minimal relayer is acceptable, but not required.
+- **Helper:** listens to `ProposalCreated` and **pushes** registration tx to Base MirrorGovernor, or does on-chain emit via a Mainnet MirrorEmitter + Layer-0.
 
 ---
 
 ## ⚙️ Governance Parameters (configurable)
 - **Voting token:** NDA (ERC-721 or ERC-20).  
-  - If **ERC-721**, 1 NFT = 1 vote (with optional **`tokenId` to `getVotes` snapshot** adapter).
-  - If **ERC-20Votes**, weight from checkpoints at Base snapshot block.
-- **Quorum:** % of total supply (or absolute). Default to mirror Lil Nouns quorum semantics conceptually.
-- **Thresholds:** Simple majority (For > Against) or stricter.  
-- **Windows:** Map mainnet `startBlock`/`endBlock` to Base block-time. We’ll **lock to the same UTC window** using block-to-time estimation with guards.
-- **Abstain:** Enabled to mirror Governor Bravo behavior.
+- **Support mapping:** For, Against, Abstain → map to Compound’s `{0,1,2}`.
+- **Quorum:** Read from Lil Nouns’ quorum semantics for consistency (display + config).
+- **Thresholds:** Majority (For > Against) or stricter.
+- **Windows:** Align with Compound’s `startBlock`/`endBlock`.
 
 ---
 
 ## 🔐 Security & Trust Model
-- **Cross-chain Security:** Use LayerZero v2 OApp (or Hyperlane ISM if directed) with **multi-DVN** or appropriate ISM for robust message validation.
-- **Replay/Reorg Handling:** MirrorGovernor stores **proposal root** (proposalId + metadata hash). Mainnet Executor verifies **binding**.
-- **Pausing & Upgrades:** Both contracts **Pausable**; parameter updates via **multi-sig** on each chain. Upgrade keys gated by DAO multisigs.
-- **Delegation Ops:** Procedures to:
-  - Keep **Lil Nouns voting power** delegated to **Executor** continuously.
-  - Re-delegate if ownership changes.
-  - **Pre-check active proposals** for snapshot timing before any re-delegation.
+- **Cross-chain Security:** Use LayerZero v2 OApp (or Hyperlane ISM) with **multi-DVN/ISM**.
+- **Replay Protection:** Store mirrored proposal root; bind to proposalId.
+- **Pausing & Upgrades:** Proxy-based with DAO multisig.
+- **Delegation Ops:** Ensure voting power delegated **before startBlock**.
 
 ---
 
 ## 🧪 Testing Plan
-- **Unit:** Governor math, quorum, finalization, message packing/unpacking, replay protection.
-- **Integration (local + testnets):**
-  - Deploy a **mock Lil Nouns Governor** on an Ethereum testnet.
-  - Deploy **MirrorGovernor** on Base Sepolia.
-  - Emit `ProposalCreated` → mirror → vote with multiple voters → finalize → L0 message → **Executor casts vote** on mock Governor.
-- **Property/Fuzz:** Voting edge cases, tie, abstain, late messages, duplicate finalize, DVN drop/retry.
-- **Fork Tests:** Mainnet fork to validate **`castVote` ABI** and **snapshot rules**.
+- **Unit:** Vote tallying, quorum checks, Compound support mapping.
+- **Integration:** Mirror Compound proposal → vote on Base → finalize → L0 message → mainnet executor casts vote.
+- **Fork Tests:** Validate against Lil Nouns Governor on mainnet fork.
 
 ---
 
 ## 🧭 Migration From Old Scope
-- **Remove:** Snapshot spaces, GitHub Actions (`mirror/relay/prop_forward/prop_submit`), state JSONs.
-- **Keep:** Frontend **(Next.js)** — re-point to **MirrorGovernor** reads (no Snapshot GraphQL).
-- **Replace:** Gnosis Safe casting with **on-chain Mainnet Executor**.
-- **New Ops:** Delegate Lil Nouns votes to **Executor** address and **monitor delegation**.
+- Replace OZ Governor references with **Compound Bravo-like interface**.
+- Map Base tallies into Compound enums.
+- Mirror `startBlock` and `endBlock` accurately.
+- Use `getReceipt` to prevent duplicate votes.
 
 ---
 
 ## 🖥️ Frontend Changes
-- **Proposal List:** Read mirrored proposals from **MirrorGovernor** (events + view fns).
-- **Voting UI:** Sign/send votes to MirrorGovernor; show quorum/threshold and countdown to **Base end time**.
-- **Result & Bridge Status:** Show **“Finalized on Base”** + **“Vote delivered to Mainnet”** with receipt links (Base + Ethereum).
-- **Admin Panel:** Parameters (read-only), contract addresses, DVN/Endpoint status, pause indicators.
+- **Proposal List:** MirrorGovernor events + Compound proposal data.
+- **Voting UI:** Cast Base votes mapped to For/Against/Abstain.
+- **Results:** Show mirrored tallies + mainnet vote status (receipt).
 
 ---
 
@@ -124,7 +139,7 @@
 ```ts
 export const CONFIG = {
   // Ethereum Mainnet
-  LIL_NOUNS_GOVERNOR: "0x...",       // read-only
+  LIL_NOUNS_GOVERNOR: "0x...",       // Compound Bravo contract
   MAINNET_EXECUTOR:    "0x...",       // our on-chain voter (delegatee)
   L0_ENDPOINT_MAINNET: "0x...",       // Layer-0 endpoint
   DVN_SET_MAINNET:     ["0x...", "..."],
@@ -136,58 +151,22 @@ export const CONFIG = {
   DVN_SET_BASE:        ["0x...", "..."],
 
   // Params
-  QUORUM_BPS:          2000,          // 20% example
+  QUORUM_BPS:          2000,
   ABSTAIN_ENABLED:     true,
-  TIME_SYNC_MODE:      "UTC_WINDOW",  // or "BLOCK_MAPPED"
+  SUPPORT_ENUM:        { Against:0, For:1, Abstain:2 }
 };
-````
-
----
-
-## 🗓️ Timeline (2 weeks to MVP)
-
-* **Day 1–2:** Contracts scaffolding (OZ Governor adapters), interface with Layer-0 OApp, config stubs.
-* **Day 3–4:** Mirror registration path (Emitter or direct registration), proposal registry & hashing, vote logic + snapshots.
-* **Day 5–6:** Finalization, Layer-0 message packing/receiving, Mainnet Executor `castVote[_WithReason]`.
-* **Day 7:** ERC-721 voting adapter (if needed), pause/upgrade guards, idempotency/replay controls.
-* **Day 8–9:** Testnet deployments (Base Sepolia + Ethereum Sepolia), end-to-end tests.
-* **Day 10:** Frontend rewiring (contracts → UI), explorer links, status toasts.
-* **Day 11:** Fuzz/property tests, boundary cases, gas profiling.
-* **Day 12–13:** Security review checklist, runbook (delegation ops, pause, upgrades), docs.
-* **Day 14:** Mainnet/Base deploy gates (behind pause), dry-run with a live Lil proposal window.
-
----
-
-## 📊 Success Metrics
-
-* **0 off-chain trust** in vote path (no Snapshot/GitHub Actions).
-* **< 2 min** mirror latency from proposal creation to Base availability.
-* **100%** deterministic on-chain finalization and single cast per proposal.
-* **No missed snapshots** (delegation maintained prior to each proposal).
+```
 
 ---
 
 ## 📒 Runbooks (ops highlights)
-
-* **Delegation:** Ensure all Lil Nouns voting power intended for NDA is **delegated to `MAINNET_EXECUTOR`**. Verify before each active window; never change delegate between **proposal snapshot** and **proposal end**.
-* **Pausing:** If cross-chain validation degrades (DVN issues), **Pause** MirrorGovernor finalizations that would emit messages; resume after DVN health returns.
-* **Upgrades:** Proxy-based, gated by DAO multisigs. Publish ABI & verified source.
-
----
-
-## 🧰 Documentation & Handover
-
-* Contract specs (NatSpec), state diagrams, message schemas.
-* Deployment guide (addresses, DVNs, endpoints, env).
-* Frontend integration notes (ABIs, event indexing).
-* Troubleshooting (common revert reasons, DVN misconfig, replay protection).
+- **Delegation:** Keep delegation stable before `startBlock`.
+- **Pausing:** Disable finalization if DVNs unhealthy.
+- **Upgrades:** DAO multisig controls.
 
 ---
 
 ### Quick Decision Log
-
-* **Why Layer-0?** Strong cross-chain verification; removes off-chain relays and Snapshot trust.
-* **Why Executor-as-Delegate?** Lil Nouns Governor tallies voting power at **snapshot block**; delegation must exist **before** voting starts — a stable on-chain delegate is the only robust path.
-
-
-
+- **Why Compound-based?** Lil Nouns uses Governor Bravo fork, not OZ. Must mirror its semantics.
+- **Why Layer-0?** To eliminate off-chain relayers.
+- **Why Executor-as-Delegate?** Voting power snapshot happens at `startBlock`.
